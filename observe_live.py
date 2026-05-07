@@ -3,7 +3,6 @@ import numpy as np
 import time
 import cv2 as cv
 import mediapipe as mp
-from types import SimpleNamespace
 from collections import deque
 
 # Base options and config
@@ -16,7 +15,7 @@ HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
 hlOptions = HandLandmarkerOptions(
     base_options=BaseOptions(model_asset_path='models/hand_landmarker.task'),
     running_mode=VisionRunningMode.VIDEO,
-    num_hands=2)
+    num_hands=1)
 
 
 # Config for Face detection
@@ -31,7 +30,6 @@ MAX_TEMPORAL_WINDOW_SIZE=16
 HAND_NEAR_MOUTH_THRESHOLD=0.20
 PERSISTENCE_THRESHOLD=0.5
 PERSISTENCE_PENALTY=0.5
-
 SMOKING_HAND_LANDMARK_INDEX = [
   7,   # INDEX_FINGER_DIP
   8,   # INDEX_FINGER_TIP
@@ -130,8 +128,8 @@ def heuristic_model(temporal_window):
     if (
       not feat_vec["face"]
       or not feat_vec["hand"]
-      or not feat_vec["centroid_to_mouth"]
-      or not feat_vec["min_finger_to_mouth"]
+      or feat_vec["centroid_to_mouth"] is None
+      or feat_vec["min_finger_to_mouth"] is None
     ): continue
    
     valid_count += 1
@@ -153,25 +151,26 @@ def heuristic_model(temporal_window):
 
 
 def print_window_table(window):
-    if not window:
-        print("<empty window>")
-        return
-
-    fields = list(window[0].keys())
-
-    def fmt(value):
-        if value is None:
-            return "None"
-        if isinstance(value, float):
-            return f"{value:.3f}"
-        return str(value)
-
-    print("idx | " + " | ".join(fields))
-    print("-" * (6 + sum(len(f) + 3 for f in fields)))
-
-    for i, feat_vec in enumerate(window):
-        values = [fmt(feat_vec.get(field)) for field in fields]
-        print(f"{i:>3} | " + " | ".join(values))
+  '''
+  For debuging
+  '''
+  if not window:
+    print("<empty window>")
+    return
+  fields = list(window[0].keys())
+  
+  def fmt(value):
+    if value is None:
+      return "None"
+    if isinstance(value, float):
+      return f"{value:.3f}"
+    return str(value)
+  
+  print("idx | " + " | ".join(fields))
+  print("-" * (6 + sum(len(f) + 3 for f in fields)))
+  for i, feat_vec in enumerate(window):
+    values = [fmt(feat_vec.get(field)) for field in fields]
+    print(f"{i:>3} | " + " | ".join(values))
 
 # ---------------------
 # Main live loop
@@ -179,8 +178,13 @@ def print_window_table(window):
 def main():
   cap = cv.VideoCapture(0)
   temporal_window = deque(maxlen=MAX_TEMPORAL_WINDOW_SIZE)
+  frame_id = 0
+  start_timestamp = time.monotonic()
   
-  with HandLandmarker.create_from_options(hlOptions) as handDetector, FaceDetector.create_from_options(fdOptions) as faceDetector:
+  with (
+    HandLandmarker.create_from_options(hlOptions) as handDetector,
+    FaceDetector.create_from_options(fdOptions) as faceDetector
+  ):
     while cap.isOpened():
       success, frame_bgr = cap.read()
 
@@ -188,32 +192,39 @@ def main():
         print("Cannot receive frame. Exit")
         break
       
+      frame_id += 1
+      timestamp_ms = int((time.monotonic() - start_timestamp) * 1000)
+      
+      
       # prepare data for detectors
       frame_rgb = cv.cvtColor(frame_bgr, cv.COLOR_BGR2RGB)
       mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
       
       # run detectors
-      timestamp_ms = int(time.time() * 1000)
       hand_detect = handDetector.detect_for_video(mp_image, timestamp_ms)
       face_detect = faceDetector.detect_for_video(mp_image, timestamp_ms)
       
       # Build feature vector
       feat_vec = build_feat_vec(hand_detect, face_detect)
       temporal_window.append(feat_vec)
+      
       if len(temporal_window) < MAX_TEMPORAL_WINDOW_SIZE:
-        continue
-      
-      # Input of behavioral model
-      X_t = list(temporal_window)
-      print_window_table(X_t)
-      
-      # Feed input to behavioral model - Heuristic currently
-      raw_score, persistence = heuristic_model(X_t)
+        raw_score, persistence = 0.0, 0.0
+      else:
+        # Input of behavioral model
+        X_t = list(temporal_window)
+        
+        # TODO: Uncomment for debugging
+        #print_window_table(X_t)
+        
+        # Feed input to behavioral model - Heuristic currently
+        raw_score, persistence = heuristic_model(X_t)
       
       observe_packet = {
+        "frame_id": frame_id,
         "observe_confidence_raw": raw_score,
         "temporal_persistence": persistence,
-      }  
+      }
       print(json.dumps(observe_packet))
       
 
@@ -231,6 +242,13 @@ def main():
           y = int(landmark.y * height)
           cv.circle(frame_bgr, (x, y), 4, (255, 0, 0))
 
+      cv.putText(
+        frame_bgr, 
+        f"scrore={raw_score:.2f} persistence={persistence:.2f}", (20, 40), 
+        cv.FONT_HERSHEY_SIMPLEX, 
+        0.8, 
+        (0, 255, 0), 2
+      )
 
       cv.imshow("hand landmarks", frame_bgr)
 
