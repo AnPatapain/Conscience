@@ -15,7 +15,7 @@ HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
 hlOptions = HandLandmarkerOptions(
     base_options=BaseOptions(model_asset_path='models/hand_landmarker.task'),
     running_mode=VisionRunningMode.VIDEO,
-    num_hands=1)
+    num_hands=2)
 
 
 # Config for Face detection
@@ -228,13 +228,52 @@ def main():
       print(json.dumps(observe_packet))
       
 
-      # visualize
+      # visualize hands + labels
       height, width, _ = frame_bgr.shape
-      for hand_landmarks in hand_detect.hand_landmarks:
+
+      for hand_idx, hand_landmarks in enumerate(hand_detect.hand_landmarks):
+        # Default label
+        hand_label = "Unknown"
+        hand_score = 0.0
+
+        # Read MediaPipe handedness result for this hand
+        if hand_idx < len(hand_detect.handedness) and hand_detect.handedness[hand_idx]:
+          cat = hand_detect.handedness[hand_idx][0]
+          print(hand_detect.handedness)
+          hand_label = (
+                  getattr(cat, "category_name", None)
+                  or getattr(cat, "display_name", None)
+                  or "Unknown"
+          )
+          hand_score = float(getattr(cat, "score", 0.0))
+
+        xs = []
+        ys = []
+
+        # Draw hand landmarks
         for landmark in hand_landmarks:
           x = int(landmark.x * width)
           y = int(landmark.y * height)
-          cv.circle(frame_bgr, (x, y), 4, (0, 255, 0))
+
+          xs.append(x)
+          ys.append(y)
+
+          cv.circle(frame_bgr, (x, y), 4, (0, 255, 0), -1)
+
+        # Put label near the hand
+        if xs and ys:
+          label_x = max(min(xs), 10)
+          label_y = max(min(ys) - 10, 30)
+
+          cv.putText(
+            frame_bgr,
+            f"H{hand_idx}: {hand_label} {hand_score:.2f}",
+            (label_x, label_y),
+            cv.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 255, 0),
+            2,
+          )
 
       for detection in face_detect.detections:
         for landmark in detection.keypoints:
