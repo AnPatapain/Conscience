@@ -1,0 +1,6 @@
+session_id,video_path,duration_sec,viewpoint,scenario,notes
+S001,/home/kean/Documents/work/Conscience/conscience-observe-lab/data/raw/fiftyone/activitynet-100/train/data/v_0acEl97ZBME.mp4,102.7026,n/a,smoking_prep,n/a
+S002,/home/kean/Documents/work/Conscience/conscience-observe-lab/data/raw/fiftyone/activitynet-100/train/data/v_9qUbxwjh-4A.mp4,14.898948,n/a,smoking_prep,n/a
+S003,/home/kean/Documents/work/Conscience/conscience-observe-lab/data/raw/fiftyone/activitynet-100/train/data/v_3zPoB-_JxEc.mp4,42.008633,n/a,smoking_prep,n/a
+S004,/home/kean/Documents/work/Conscience/conscience-observe-lab/data/raw/fiftyone/activitynet-100/train/data/v_4p6OjaHHSDs.mp4,37.266667,n/a,smoking_prep,n/a
+S005,/home/kean/Documents/work/Conscience/conscience-observe-lab/data/raw/fiftyone/activitynet-100/train/data/v_1Dpm9kvn3M8.mp4,84.0,n/a,smoking_prep,n/a
