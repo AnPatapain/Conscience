@@ -10,6 +10,7 @@ max_iters = 3000
 learning_rate = 1e-3
 eval_iters = 200
 n_embd = 32
+head_size = 16
 
 torch.manual_seed(1337)
 
@@ -42,30 +43,62 @@ def get_batch(split):
     yb = torch.stack([data[i+1:i + block_size + 1] for i in ix])
     return xb, yb
 
+class Head(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.query = nn.Linear(n_embd, head_size) # (C, head_size)
+        self.key = nn.Linear(n_embd, head_size) # (C, head_size)
+        self.val = nn.Linear(n_embd, head_size) # (C, head_size)
+        self.tril = torch.tril(torch.ones(block_size, block_size))
+
+    def forward(self, embd):
+        """
+        embd: (B, T, C)
+        return (B, T, head_size)
+        """
+        B, T, C = embd.shape
+
+        q = self.query(embd) # (B, T, head_size)
+        k = self.key(embd) # (B, T, head_size)
+        v = self.val(embd) # (B, T, head_size)
+
+        # Scaled self-attention
+        att = q @ k.transpose(1, 2) * head_size**-0.5 # (B, T, head_size) @ (B, head_size, T) → (B, T, T)
+
+        # Mask future token
+        att = att.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
+        att = F.softmax(att, dim=2)
+
+        return att @ v # (B, T, T) @ (B, T, head_size) → (B, T, head_size)
+
+
 class BigramLanguageModel(nn.Module):
     def __init__(self):
         super().__init__()
-        self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
-        self.position_embedding_table = nn.Embedding(block_size, n_embd)
-        self.lm_head = nn.Linear(n_embd, vocab_size)
+        self.token_embedding_table = nn.Embedding(vocab_size, n_embd) # (vocab_size, C)
+        self.position_embedding_table = nn.Embedding(block_size, n_embd) # (T, C)
+
+        self.sa_head = Head()
+        self.lm_head = nn.Linear(head_size, vocab_size)
 
     def forward(self, idx, targets=None):
-        """
+        '''
         idx, targets: (B,T)
         Return:
         - logits (B * T, C), loss (1, 1) if targets is defined
         - logits (B, T, C), loss None if targets is None
-        """
-        B, T = idx.shape
-        print(T)
+        '''
+        B, T = idx.shape # B (batch_size), T (block_size)
 
-        token_embd = self.token_embedding_table(idx) # (B, T, C)
+        tok_embd = self.token_embedding_table(idx) # (B, T, C)
         pos_embd = self.position_embedding_table(torch.arange(T)) # (T, C)
 
-        x = token_embd + pos_embd # (B, T, C)
+        x = tok_embd + pos_embd # (B, T, C)
 
-        logits = self.lm_head(x) # (B, T, vocab_size)
+        out = self.sa_head(x) # (B, T, head_size)
 
+        # logits score for each token
+        logits = self.lm_head(out) # (B, T, vocab_size)
         if targets is not None:
             B, T, C = logits.shape
             logits = logits.view(B * T, C)
@@ -73,12 +106,12 @@ class BigramLanguageModel(nn.Module):
             loss = F.cross_entropy(logits, targets)
         else:
             loss = None
-
         return logits, loss
 
     def generate(self, idx, max_new_tokens):
         for _ in range(max_new_tokens):
-            logits, loss = self.forward(idx)
+            idx_cond = idx[:, -block_size:]
+            logits, loss = self.forward(idx_cond)
             logits = logits[:, -1, :] # (B, C) on the last time step T
             probs = F.softmax(logits, dim=-1) # softmax on dimension C
             idx_next = torch.multinomial(probs, 1)
