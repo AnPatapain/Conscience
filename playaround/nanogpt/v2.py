@@ -6,9 +6,10 @@ import torch.nn.functional as F
 # Hyperparameters
 batch_size = 4 # B dimension
 block_size = 8 # T dimension
-max_iters = 3000
+max_iters = 5000
 learning_rate = 1e-3
 eval_iters = 200
+eval_interval = 500
 n_embd = 32
 head_size = 16
 
@@ -19,7 +20,7 @@ with open(Path.cwd()/'playaround'/'nanogpt'/'input.txt', 'r', encoding='utf-8') 
 
 chars = sorted(set(list(text)))
 vocab_size = len(chars)
-
+# Tokenization - map character to numeric id
 stoi = { c:i for i, c in enumerate(chars) }
 itos = { i:c for i, c in enumerate(chars) }
 encode = lambda s : [stoi[c] for c in s]
@@ -43,13 +44,28 @@ def get_batch(split):
     yb = torch.stack([data[i+1:i + block_size + 1] for i in ix])
     return xb, yb
 
+@torch.no_grad()
+def estimate_loss():
+    out = {}
+    for split in ['train', 'val']:
+        losses = torch.zeros(eval_iters)
+        for i in range(eval_iters):
+            x, y = get_batch(split)
+            logits, loss = model(x, y)
+            losses[i] = loss.item()
+        out[split] = losses.mean()
+    return out
+
 class Head(nn.Module):
+    """
+    Attention head
+    """
     def __init__(self):
         super().__init__()
         self.query = nn.Linear(n_embd, head_size) # (C, head_size)
         self.key = nn.Linear(n_embd, head_size) # (C, head_size)
         self.val = nn.Linear(n_embd, head_size) # (C, head_size)
-        self.tril = torch.tril(torch.ones(block_size, block_size))
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
 
     def forward(self, embd):
         """
@@ -100,8 +116,8 @@ class BigramLanguageModel(nn.Module):
         # logits score for each token
         logits = self.lm_head(out) # (B, T, vocab_size)
         if targets is not None:
-            B, T, C = logits.shape
-            logits = logits.view(B * T, C)
+            B, T, vocab_size = logits.shape
+            logits = logits.view(B * T, vocab_size)
             targets = targets.view(B * T)
             loss = F.cross_entropy(logits, targets)
         else:
@@ -118,18 +134,19 @@ class BigramLanguageModel(nn.Module):
             idx = torch.concat((idx, idx_next), dim=-1)
         return idx
 
-m = BigramLanguageModel()
-xb, yb = get_batch('train')
-init_context = torch.zeros((1, 1), dtype=torch.long) # start w/ single token
-print(decode(m.generate(init_context, max_new_tokens=100)[0].tolist()))
-
-
-optimizer = torch.optim.AdamW(m.parameters(), lr=learning_rate)
+model = BigramLanguageModel()
+optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 for iter in range(max_iters):
+    # Evaluation
+    if iter % eval_interval == 0 or iter == max_iters-1:
+        losses = estimate_loss()
+        print(f'step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}')
+
     xb, yb = get_batch('train')
-    logits, loss = m(xb, yb)
+    logits, loss = model(xb, yb)
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
 
-print(decode(m.generate(init_context, max_new_tokens=500)[0].tolist()))
+context = torch.zeros((1, 1), dtype=torch.long)
+print(decode(model.generate(context, max_new_tokens=500)[0].tolist()))
