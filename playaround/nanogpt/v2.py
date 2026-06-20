@@ -11,7 +11,6 @@ learning_rate = 1e-3
 eval_iters = 200
 eval_interval = 500
 n_embd = 32
-head_size = 16
 
 torch.manual_seed(1337)
 
@@ -60,7 +59,7 @@ class Head(nn.Module):
     """
     Attention head
     """
-    def __init__(self):
+    def __init__(self, head_size):
         super().__init__()
         self.query = nn.Linear(n_embd, head_size) # (C, head_size)
         self.key = nn.Linear(n_embd, head_size) # (C, head_size)
@@ -79,7 +78,7 @@ class Head(nn.Module):
         v = self.val(embd) # (B, T, head_size)
 
         # Scaled self-attention
-        att = q @ k.transpose(1, 2) * head_size**-0.5 # (B, T, head_size) @ (B, head_size, T) → (B, T, T)
+        att = q @ k.transpose(1, 2) * k.shape[-1]**-0.5 # (B, T, head_size) @ (B, head_size, T) → (B, T, T)
 
         # Mask future token
         att = att.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
@@ -88,14 +87,63 @@ class Head(nn.Module):
         return att @ v # (B, T, T) @ (B, T, head_size) → (B, T, head_size)
 
 
+class MultiHead(nn.Module):
+    """
+    Multi-head attention: instead of having one large attention head, we do attention in groups and then concat them.
+    (i.e.: each attention-head learns different things, then we merge them.)
+    """
+    def __init__(self, nums_head, head_size):
+        super().__init__()
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(nums_head)])
+
+    def forward(self, embd):
+        return torch.concat([h(embd) for h in self.heads], dim=-1) # Merge on dim head_size -> (B, T, nums_head * head_size)
+
+class FeedForward(nn.Module):
+    """
+    Feed forward network in Transformer model.
+    Goal: instead of communicating to other tokens like attention layer, this layer allows each token to "learn" what
+    it found from other tokens.
+    Idea: give each token a space to "learn".
+    """
+    def __init__(self, n_embd):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(n_embd, 4 * n_embd),
+            nn.ReLU(), # position-wise (token-level)
+            nn.Linear(4 * n_embd, n_embd)
+        )
+
+    def forward(self, embd):
+        return self.net(embd) # -> (B, T, C)
+
+class Block(nn.Module):
+    """
+    One decoder block.
+    Computation (FFW) followed by communication (ATT)
+    """
+    def __init__(self, n_embd, nums_head):
+        super().__init__()
+        self.attention = MultiHead(nums_head, n_embd//4)
+        self.ffw = FeedForward(n_embd)
+
+    def forward(self, embd):
+        return self.ffw(self.attention(embd))
+
+
 class BigramLanguageModel(nn.Module):
     def __init__(self):
         super().__init__()
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd) # (vocab_size, C)
         self.position_embedding_table = nn.Embedding(block_size, n_embd) # (T, C)
-
-        self.sa_head = Head()
-        self.lm_head = nn.Linear(head_size, vocab_size)
+        # self.sa_head = MultiHead(4, n_embd//4)
+        # self.ffwd = FeedForward(n_embd)
+        self.blocks = nn.Sequential(
+            Block(n_embd, 4),
+            Block(n_embd, 4),
+            Block(n_embd, 4),
+        )
+        self.lm_head = nn.Linear(n_embd, vocab_size)
 
     def forward(self, idx, targets=None):
         '''
@@ -111,10 +159,11 @@ class BigramLanguageModel(nn.Module):
 
         x = tok_embd + pos_embd # (B, T, C)
 
-        out = self.sa_head(x) # (B, T, head_size)
+        # Make x go through: communication (self-attention) then computation (feed forward network).
+        x = self.blocks(x)
 
         # logits score for each token
-        logits = self.lm_head(out) # (B, T, vocab_size)
+        logits = self.lm_head(x) # (B, T, vocab_size)
         if targets is not None:
             B, T, vocab_size = logits.shape
             logits = logits.view(B * T, vocab_size)
